@@ -1,0 +1,449 @@
+# Sudoku Samurai X Solver usando CSP con Backtracking
+# Programacion III - 2025 
+# Universidad Tecnologica De Pereira
+
+import time
+
+MOSTRAR_PASOS = False
+contador_iteraciones = 0
+
+def cargar_tablero_samurai_lineas_individuales(ruta):
+    elementos = []
+
+    with open(ruta, "r") as f:
+        for linea in f:
+            linea = linea.strip()
+
+            if not linea:
+                continue
+
+            # Barras ocupan celda
+            if linea == "|":
+                elementos.append("|")
+                continue
+
+            # Convertir número
+            try:
+                n = int(linea)
+            except:
+                continue
+
+            # números >9 = vacíos
+            if n > 9:
+                n = 0
+
+            elementos.append(n)
+
+    # deben ser EXACTAMENTE 441 elementos
+    if len(elementos) < 441:
+        raise ValueError(f"Solo hay {len(elementos)} elementos. Se necesitan 441.")
+
+    elementos = elementos[:441]
+
+    tablero = []
+    for i in range(21):
+        fila = elementos[i*21:(i+1)*21]
+        tablero.append(fila)
+
+    return tablero
+
+
+def generar_tablero_vacio():
+    tablero = []
+    for f in range(21):
+        fila = []
+        for c in range(21):
+            if es_celda_jugable(f, c):
+                fila.append(0)
+            else:
+                fila.append("|")
+        tablero.append(fila)
+    return tablero
+
+
+def guardar_tablero_a_archivo(tablero, ruta):
+    """Guarda un tablero en formato de archivo (1 elemento por línea)."""
+    with open(ruta, "w") as f:
+        for fila in tablero:
+            for elem in fila:
+                if elem == "|":
+                    f.write("|\n")
+                else:
+                    f.write(f"{elem}\n")
+
+
+def es_celda_jugable(f, c):
+    if 0 <= f < 9 and 0 <= c < 9:
+        return True
+    # Superior derecha
+    if 0 <= f < 9 and 12 <= c < 21:
+        return True
+    # Centro
+    if 6 <= f < 15 and 6 <= c < 15:
+        return True
+    # Inferior izquierda
+    if 12 <= f < 21 and 0 <= c < 9:
+        return True
+    # Inferior derecha
+    if 12 <= f < 21 and 12 <= c < 21:
+        return True
+
+    return False
+
+
+def es_valido(tablero, f, c, val):
+
+    if not es_celda_jugable(f, c):
+        return False
+
+    # Filas
+    for x in range(21):
+        if tablero[f][x] == val:
+            return False
+
+    # Columnas
+    for y in range(21):
+        if tablero[y][c] == val:
+            return False
+
+    # Bloque 3×3
+    base_f = (f // 3) * 3
+    base_c = (c // 3) * 3
+
+    for y in range(base_f, base_f + 3):
+        for x in range(base_c, base_c + 3):
+            if 0 <= y < 21 and 0 <= x < 21:
+                if tablero[y][x] == val:
+                    return False
+
+    return True
+
+
+def init_domains():
+    domains = {}
+    for row in range(21):
+        for col in range(21):
+            if es_celda_jugable(row, col):
+                domains[(row, col)] = set(range(1, 10))
+    return domains
+
+
+def cargar_dominios_samurai(tablero_grid_21x21):
+    """Convierte la matriz 21x21 a dominios, fijando iniciales."""
+    domains = init_domains()
+
+    for f in range(21):
+        for c in range(21):
+            key = (f, c)
+            if key in domains:
+                valor = tablero_grid_21x21[f][c]
+
+                if isinstance(valor, int) and 1 <= valor <= 9:
+                    domains[key] = {valor}
+
+    return domains
+
+
+def get_sudoku_regions(start_row, start_col):
+    """Obtiene las regiones (restricciones AllDiff) para un sudoku 9x9."""
+    regions = []
+
+    # Filas, Columnas y Bloques 3x3
+    for r in range(9):
+        row = []
+        for c in range(9):
+            row.append((start_row + r, start_col + c))
+        regions.append(row)
+
+    for c in range(9):
+        col = []
+        for r in range(9):
+            col.append((start_row + r, start_col + c))
+        regions.append(col)
+
+    for block_r in range(0, 9, 3):
+        for block_c in range(0, 9, 3):
+            block = []
+            for r in range(3):
+                for c in range(3):
+                    block.append((start_row + block_r + r, start_col + block_c + c))
+            regions.append(block)
+
+    return regions
+
+
+def createConstraints():
+    """Crea la lista de todas las 135 restricciones AllDiff del Samurai X."""
+    constraints = []
+
+    sudokus = [
+        (0, 0), (0, 12), (6, 6), (12, 0), (12, 12)
+    ]
+
+    for start_row, start_col in sudokus:
+        regions = get_sudoku_regions(start_row, start_col)
+        constraints.extend(regions)
+
+    return constraints
+
+CONSTRAINTS = createConstraints()
+
+
+def AllDiff_Propagator(domains, vars):
+    changed = False
+    
+    # Recolectar valores asignados
+    assigned_values = set()
+    for var in vars:
+        if var in domains and len(domains[var]) == 1:
+            assigned_values.add(list(domains[var])[0])
+    
+    # Eliminar valores asignados de celdas no asignadas
+    for var in vars:
+        if var in domains and len(domains[var]) > 1:
+            original_size = len(domains[var])
+            domains[var] -= assigned_values
+            
+            if len(domains[var]) < original_size:
+                changed = True
+            
+            if len(domains[var]) == 0:
+                return True, False  # Inconsistente
+    
+    # Técnica adicional: Naked Singles (si solo queda un lugar para un valor)
+    for val in range(1, 10):
+        possible_positions = [var for var in vars if var in domains and val in domains[var]]
+        if len(possible_positions) == 0 and val not in assigned_values:
+            return True, False  # Inconsistente
+        elif len(possible_positions) == 1:
+            var = possible_positions[0]
+            if len(domains[var]) > 1:
+                domains[var] = {val}
+                changed = True
+
+    return changed, True
+
+
+def propagate(domains):
+    """Aplica la propagación de restricciones repetidamente hasta punto fijo."""
+    while True:
+        any_change = False
+
+        for constraint_vars in CONSTRAINTS:
+            changed, consistent = AllDiff_Propagator(domains, constraint_vars)
+
+            if not consistent:
+                return False
+            if changed:
+                any_change = True
+
+        if not any_change:
+            break
+
+    return True
+
+
+def is_solved(domains):
+    return all(len(domains[v]) == 1 for v in domains)
+
+
+def select_variable(domains):
+    """Selecciona la variable no asignada con el dominio más pequeño (MRV)."""
+
+    unassigned = [(v, len(domains[v])) for v in domains if len(domains[v]) > 1]
+
+    if not unassigned:
+        return None
+
+    var_a_seleccionar = min(unassigned, key=lambda x: x[1])
+    return var_a_seleccionar[0]
+
+
+def backtrack_csp(domains):
+    """Implementación recursiva del CSP con Backtracking y Propagación."""
+    global contador_iteraciones
+    
+    if MOSTRAR_PASOS:
+        contador_iteraciones += 1
+        celdas_asignadas = sum(1 for v in domains.values() if len(v) == 1)
+        total_celdas = len(domains)
+        print(f"\r[Iteración {contador_iteraciones}] Celdas asignadas: {celdas_asignadas}/{total_celdas}", end='', flush=True)
+
+    if not propagate(domains):
+        return None
+
+    if is_solved(domains):
+        if MOSTRAR_PASOS:
+            print()  # Nueva línea al finalizar
+        return domains
+
+    var = select_variable(domains)
+    if not var:
+        return None
+
+    values = list(domains[var])
+    
+    if MOSTRAR_PASOS and len(values) <= 5:
+        print(f"\n  → Probando celda ({var[0]}, {var[1]}) con valores posibles: {values}")
+
+    for val in values:
+        # Copia optimizada usando dict comprehension
+        new_domains = {k: v.copy() for k, v in domains.items()}
+
+        # Asignar la hipótesis
+        new_domains[var] = {val}
+
+        result = backtrack_csp(new_domains)
+        if result:
+            return result
+
+    return None
+
+
+def resolver(tablero):
+    global contador_iteraciones
+    contador_iteraciones = 0
+    
+    if tablero is None:
+        return False
+
+    start_time = time.time()
+
+    if MOSTRAR_PASOS:
+        print("\nPaso 1: Inicializando dominios...")
+    domains_iniciales = cargar_dominios_samurai(tablero)
+    
+    if MOSTRAR_PASOS:
+        celdas_vacias = sum(1 for v in domains_iniciales.values() if len(v) > 1)
+        print(f"   Dominios inicializados. Celdas por resolver: {celdas_vacias}\n")
+        print("Paso 2: Aplicando propagacion inicial de restricciones...")
+        propagate(domains_iniciales)
+        celdas_vacias_post = sum(1 for v in domains_iniciales.values() if len(v) > 1)
+        print(f"   Propagacion completada. Celdas por resolver: {celdas_vacias_post}\n")
+        print("Paso 3: Iniciando busqueda con Backtracking + CSP...\n")
+
+    solucion_domains = backtrack_csp(domains_iniciales)
+
+    end_time = time.time()
+    if MOSTRAR_PASOS:
+        print(f"\nBusqueda completada en {contador_iteraciones} iteraciones.")
+    print(f"Tiempo de resolución: {end_time - start_time:.2f} segundos.")
+
+    # 3. Actualizar el tablero original si se encontró una solución
+    if solucion_domains:
+        for f in range(21):
+            for c in range(21):
+                key = (f, c)
+                if key in solucion_domains:
+                    # Actualiza la matriz de listas con el valor único del dominio
+                    tablero[f][c] = list(solucion_domains[key])[0]
+        return True
+    else:
+        return False
+
+
+def imprimir_samurai(tablero):
+    print("\n=== TABLERO SAMURAI X ===\n")
+
+    for r in range(21):
+        fila = ""
+        for c in range(21):
+
+            v = tablero[r][c]
+            if v == "|":
+                celda = "|"
+            elif v == 0:
+                celda = "."
+            else:
+                celda = str(v)
+
+            fila += celda + " "
+
+        print(fila)
+
+    print("\n=========================\n")
+
+
+def menu():
+    global MOSTRAR_PASOS
+    
+    while True:
+        print("\n" + "="*60)
+        print("  SUDOKU SAMURAI X - CSP SOLVER")
+        print("="*60)
+        print("1. Resolver tablero (tablero.txt)")
+        print("2. Generar y resolver tablero vacio")
+        print("3. Salir")
+        print("="*60)
+        print("\nModo visualizacion: " + ("ACTIVADO" if MOSTRAR_PASOS else "DESACTIVADO"))
+        print("(Presione 'v' para cambiar modo de visualizacion)")
+        print("="*60)
+        
+        opcion = input("\nSeleccione una opción: ").strip().lower()
+        
+        if opcion == "v":
+            MOSTRAR_PASOS = not MOSTRAR_PASOS
+            estado = "ACTIVADO" if MOSTRAR_PASOS else "DESACTIVADO"
+            print(f"\nModo visualizacion paso a paso: {estado}")
+            continue
+        
+        if opcion == "1":
+            resolver_tablero("tablero.txt")
+        elif opcion == "2":
+            generar_y_resolver()
+        elif opcion == "3":
+            print("\nHasta luego!")
+            break
+        else:
+            print("\nOpcion no valida.")
+
+
+def generar_y_resolver():
+    global contador_iteraciones
+    
+    print("\nGenerando tablero vacio...")
+    tablero = generar_tablero_vacio()
+    
+    print("Resolviendo tablero vacio...\n")
+    
+    contador_iteraciones = 0
+    inicio = time.time()
+    
+    if resolver(tablero):
+        fin = time.time()
+        print(f"\nTablero resuelto en {fin - inicio:.2f} segundos.")
+        print(f"Iteraciones: {contador_iteraciones}\n")
+        imprimir_samurai(tablero)
+    else:
+        print("No se pudo resolver el tablero.")
+
+
+def resolver_tablero(ruta):
+    global contador_iteraciones
+    """Carga y resuelve un tablero específico."""
+    try:
+        print("\n")
+        tablero = cargar_tablero_samurai_lineas_individuales(ruta)
+        
+        imprimir_samurai(tablero)
+        print("Resolviendo, por favor espera...\n")
+        
+        contador_iteraciones = 0
+        inicio = time.time()
+        
+        if resolver(tablero):
+            fin = time.time()
+            print(f"Tiempo de resolucion: {fin - inicio:.2f} segundos.")
+            print(f"Iteraciones: {contador_iteraciones}\n")
+            imprimir_samurai(tablero)
+        else:
+            print("El tablero no tiene solucion.")
+    
+    except ValueError as e:
+        print(f"Error al cargar el tablero: {e}")
+    except FileNotFoundError:
+        print(f"Error: No se encontro el archivo en la ruta {ruta}.")
+
+
+if __name__ == "__main__":
+    menu()
